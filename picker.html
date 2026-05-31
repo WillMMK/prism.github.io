@@ -476,6 +476,8 @@
                 returnToApp(doc.id, doc.name);
             } else if (data.action === google.picker.Action.CANCEL) {
                 returnCancel();
+            } else if (data.action === google.picker.Action.ERROR) {
+                handlePickerError(data.message || 'Google Picker error');
             }
             document.getElementById('pickBtn').disabled = false;
         }
@@ -510,7 +512,9 @@
                 if (pickerCompleted) return;
                 sessionStorage.setItem(COOKIE_GATE_RECOVERY_SESSION_KEY, '1');
                 try {
-                    if (activePicker && typeof activePicker.setVisible === 'function') {
+                    if (activePicker && typeof activePicker.dispose === 'function') {
+                        activePicker.dispose();
+                    } else if (activePicker && typeof activePicker.setVisible === 'function') {
                         activePicker.setVisible(false);
                     }
                 } catch {
