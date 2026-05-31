@@ -226,6 +226,20 @@
             window.location.replace(nextUrl);
         }
 
+        // iOS in-app auth sessions can open this page with an empty HTTP referrer.
+        // Google blocks referrer-restricted Picker API keys on that first load, but a
+        // same-page navigation gives Google a normal https://www.getprismbudget.com referrer.
+        const referrerReady = urlParams.get('referrerReady') === '1';
+        if (accessToken && !isEmbedded && !referrerReady) {
+            const nextParams = new URLSearchParams(window.location.search);
+            nextParams.set('token', accessToken);
+            nextParams.set('scheme', returnScheme);
+            nextParams.set('referrerReady', '1');
+            nextParams.set('ts', String(Date.now()));
+            const nextUrl = `${window.location.origin}${window.location.pathname}?${nextParams.toString()}`;
+            window.location.replace(nextUrl);
+        }
+
         // Track state
         let gapiReady = false;
         let pickerModuleReady = false;
@@ -301,6 +315,7 @@
                     'token_present=' + Boolean(accessToken),
                     'gapi_ready=' + gapiReady,
                     'picker_module=' + pickerModuleReady,
+                    'referrer=' + (document.referrer || '<empty>'),
                     'url=' + window.location.href
                 ]);
                 const docsView = new google.picker.DocsView(google.picker.ViewId.SPREADSHEETS)
@@ -359,6 +374,7 @@
                 'token_present=' + Boolean(accessToken),
                 'gapi_ready=' + gapiReady,
                 'picker_module=' + pickerModuleReady,
+                'referrer=' + (document.referrer || '<empty>'),
                 'url=' + window.location.href
             ]);
             if (retryCount <= MAX_RETRIES) {
