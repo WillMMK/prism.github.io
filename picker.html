@@ -153,7 +153,7 @@
         const COOKIE_GATE_RECOVERY_SESSION_KEY = 'prism_picker_cookie_gate_recovery_session';
         const COOKIE_GATE_COMPLETE_KEY = 'prism_picker_cookie_gate_complete';
         const TOKEN_TTL_MS = 10 * 60 * 1000;
-        const COOKIE_GATE_RECOVERY_DELAY_MS = 10000;
+        const COOKIE_GATE_RECOVERY_DELAY_MS = 30000;
 
         function getCookie(name) {
             const match = document.cookie.match(new RegExp('(^|;\\s*)' + name + '=([^;]*)'));
@@ -250,6 +250,7 @@
         let activePicker = null;
         let cookieGateRecoveryTimer = null;
         let pickerCompleted = false;
+        let pickerFrameLoadCount = 0;
 
         // Function to receive token from injected JavaScript
         window.initWithToken = function (token) {
@@ -358,6 +359,38 @@
                 console.error('[Picker] Build error:', err.message);
                 handlePickerError(err.message);
             }
+        }
+
+        function recoverFromCookieGate(reason) {
+            if (pickerCompleted) return;
+            sessionStorage.setItem(COOKIE_GATE_RECOVERY_SESSION_KEY, '1');
+            try {
+                if (activePicker && typeof activePicker.dispose === 'function') {
+                    activePicker.dispose();
+                } else if (activePicker && typeof activePicker.setVisible === 'function') {
+                    activePicker.setVisible(false);
+                }
+            } catch {
+                // If Picker is already gone, continue with the page-level recovery.
+            }
+
+            showStatus('Reopening Google Drive...', false);
+            setDebug([
+                'state=cookieGateRecovery',
+                'reason=' + reason,
+                'frame_loads=' + pickerFrameLoadCount,
+                'token_present=' + Boolean(accessToken),
+                'url=' + window.location.href
+            ]);
+            const nextParams = new URLSearchParams(window.location.search);
+            nextParams.set('token', accessToken);
+            nextParams.set('scheme', returnScheme);
+            nextParams.set('auto', '1');
+            nextParams.set('referrerReady', '1');
+            nextParams.set('cookieRecovery', '1');
+            nextParams.set('ts', String(Date.now()));
+            const nextUrl = `${window.location.origin}${window.location.pathname}?${nextParams.toString()}`;
+            window.location.replace(nextUrl);
         }
 
         function handlePickerError(errorMsg) {
@@ -504,34 +537,49 @@
         }
 
         function scheduleCookieGateRecovery() {
+            attachPickerFrameRecovery();
             if (isEmbedded || hasCookieGateCompleted() || cookieGateRecoveryTimer) return;
             if (urlParams.get('cookieRecovery') === '1') return;
             if (sessionStorage.getItem(COOKIE_GATE_RECOVERY_SESSION_KEY) === '1') return;
 
             cookieGateRecoveryTimer = setTimeout(function () {
-                if (pickerCompleted) return;
-                sessionStorage.setItem(COOKIE_GATE_RECOVERY_SESSION_KEY, '1');
-                try {
-                    if (activePicker && typeof activePicker.dispose === 'function') {
-                        activePicker.dispose();
-                    } else if (activePicker && typeof activePicker.setVisible === 'function') {
-                        activePicker.setVisible(false);
-                    }
-                } catch {
-                    // If Picker is already gone, continue with the page-level recovery.
-                }
-
-                showStatus('Reopening Google Drive...', false);
-                const nextParams = new URLSearchParams(window.location.search);
-                nextParams.set('token', accessToken);
-                nextParams.set('scheme', returnScheme);
-                nextParams.set('auto', '1');
-                nextParams.set('referrerReady', '1');
-                nextParams.set('cookieRecovery', '1');
-                nextParams.set('ts', String(Date.now()));
-                const nextUrl = `${window.location.origin}${window.location.pathname}?${nextParams.toString()}`;
-                window.location.replace(nextUrl);
+                recoverFromCookieGate('timeout');
             }, COOKIE_GATE_RECOVERY_DELAY_MS);
+        }
+
+        function attachPickerFrameRecovery(attempt) {
+            const currentAttempt = attempt || 0;
+            const frame = document.querySelector('iframe.picker-dialog-frame');
+            if (!frame) {
+                if (currentAttempt < 20) {
+                    setTimeout(function () {
+                        attachPickerFrameRecovery(currentAttempt + 1);
+                    }, 100);
+                }
+                return;
+            }
+            if (frame.dataset.prismRecoveryAttached === '1') return;
+            frame.dataset.prismRecoveryAttached = '1';
+
+            frame.addEventListener('load', function () {
+                pickerFrameLoadCount += 1;
+                if (debugEnabled) {
+                    setDebug([
+                        'state=pickerFrameLoad',
+                        'frame_loads=' + pickerFrameLoadCount,
+                        'cookie_recovery=' + (urlParams.get('cookieRecovery') || '0'),
+                        'url=' + window.location.href
+                    ]);
+                }
+                if (
+                    pickerFrameLoadCount >= 2 &&
+                    !pickerCompleted &&
+                    urlParams.get('cookieRecovery') !== '1' &&
+                    sessionStorage.getItem(COOKIE_GATE_RECOVERY_SESSION_KEY) !== '1'
+                ) {
+                    recoverFromCookieGate('picker-frame-reload');
+                }
+            });
         }
 
         // Called once gapi script has loaded
