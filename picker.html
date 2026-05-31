@@ -122,8 +122,7 @@
 <body>
     <div class="card">
         <h1>Select Your Spreadsheet</h1>
-        <p>Choose a budget spreadsheet from your Google Drive. If Google asks for cookies, accept them, then open Drive.
-        </p>
+        <p>Choose a budget spreadsheet from Google Drive. If Google asks for cookies, tap Allow; Prism will reopen Drive automatically.</p>
 
         <button id="pickBtn" class="btn" onclick="openPicker()">
             <svg viewBox="0 0 24 24" fill="currentColor">
@@ -151,7 +150,10 @@
         const STORAGE_SCHEME_KEY = 'prism_picker_scheme';
         const STORAGE_EMBEDDED_KEY = 'prism_picker_embedded';
         const STORAGE_TOKEN_TS_KEY = 'prism_picker_token_ts';
+        const COOKIE_GATE_RECOVERY_SESSION_KEY = 'prism_picker_cookie_gate_recovery_session';
+        const COOKIE_GATE_COMPLETE_KEY = 'prism_picker_cookie_gate_complete';
         const TOKEN_TTL_MS = 10 * 60 * 1000;
+        const COOKIE_GATE_RECOVERY_DELAY_MS = 10000;
 
         function getCookie(name) {
             const match = document.cookie.match(new RegExp('(^|;\\s*)' + name + '=([^;]*)'));
@@ -245,6 +247,9 @@
         let pickerModuleReady = false;
         let retryCount = 0;
         let pendingOpen = false;
+        let activePicker = null;
+        let cookieGateRecoveryTimer = null;
+        let pickerCompleted = false;
 
         // Function to receive token from injected JavaScript
         window.initWithToken = function (token) {
@@ -293,6 +298,7 @@
         }
 
         function returnToApp(fileId, fileName) {
+            markCookieGateComplete();
             sendResult({
                 action: 'picked',
                 fileId: fileId,
@@ -301,6 +307,7 @@
         }
 
         function returnCancel() {
+            markCookieGateComplete();
             sendResult({ action: 'cancel' });
         }
 
@@ -315,6 +322,7 @@
                     'token_present=' + Boolean(accessToken),
                     'gapi_ready=' + gapiReady,
                     'picker_module=' + pickerModuleReady,
+                    'cookie_recovery=' + (urlParams.get('cookieRecovery') || '0'),
                     'referrer=' + (document.referrer || '<empty>'),
                     'url=' + window.location.href
                 ]);
@@ -336,8 +344,10 @@
                 }
 
                 const picker = pickerBuilder.build();
+                activePicker = picker;
 
                 picker.setVisible(true);
+                scheduleCookieGateRecovery();
                 // If we got here, the key is likely valid. Clear the reload flag.
                 sessionStorage.removeItem('prism_picker_reloaded');
 
@@ -374,6 +384,7 @@
                 'token_present=' + Boolean(accessToken),
                 'gapi_ready=' + gapiReady,
                 'picker_module=' + pickerModuleReady,
+                'cookie_recovery=' + (urlParams.get('cookieRecovery') || '0'),
                 'referrer=' + (document.referrer || '<empty>'),
                 'url=' + window.location.href
             ]);
@@ -467,6 +478,56 @@
                 returnCancel();
             }
             document.getElementById('pickBtn').disabled = false;
+        }
+
+        function markCookieGateComplete() {
+            pickerCompleted = true;
+            if (cookieGateRecoveryTimer) {
+                clearTimeout(cookieGateRecoveryTimer);
+                cookieGateRecoveryTimer = null;
+            }
+            try {
+                localStorage.setItem(COOKIE_GATE_COMPLETE_KEY, '1');
+            } catch {
+                // localStorage can be unavailable in restricted browser modes.
+            }
+        }
+
+        function hasCookieGateCompleted() {
+            try {
+                return localStorage.getItem(COOKIE_GATE_COMPLETE_KEY) === '1';
+            } catch {
+                return false;
+            }
+        }
+
+        function scheduleCookieGateRecovery() {
+            if (isEmbedded || hasCookieGateCompleted() || cookieGateRecoveryTimer) return;
+            if (urlParams.get('cookieRecovery') === '1') return;
+            if (sessionStorage.getItem(COOKIE_GATE_RECOVERY_SESSION_KEY) === '1') return;
+
+            cookieGateRecoveryTimer = setTimeout(function () {
+                if (pickerCompleted) return;
+                sessionStorage.setItem(COOKIE_GATE_RECOVERY_SESSION_KEY, '1');
+                try {
+                    if (activePicker && typeof activePicker.setVisible === 'function') {
+                        activePicker.setVisible(false);
+                    }
+                } catch {
+                    // If Picker is already gone, continue with the page-level recovery.
+                }
+
+                showStatus('Reopening Google Drive...', false);
+                const nextParams = new URLSearchParams(window.location.search);
+                nextParams.set('token', accessToken);
+                nextParams.set('scheme', returnScheme);
+                nextParams.set('auto', '1');
+                nextParams.set('referrerReady', '1');
+                nextParams.set('cookieRecovery', '1');
+                nextParams.set('ts', String(Date.now()));
+                const nextUrl = `${window.location.origin}${window.location.pathname}?${nextParams.toString()}`;
+                window.location.replace(nextUrl);
+            }, COOKIE_GATE_RECOVERY_DELAY_MS);
         }
 
         // Called once gapi script has loaded
